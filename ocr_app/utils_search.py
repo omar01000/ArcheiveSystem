@@ -1,33 +1,50 @@
-from sentence_transformers import SentenceTransformer
+import re
 import faiss
-import numpy as np
+from django.conf import settings
+from sentence_transformers import SentenceTransformer
 from .models import Document
 
-sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+# Initialize FAISS & SBERT
+sbert_model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+index = faiss.IndexFlatL2(384)  # Adjust based on SBERT embedding size
+documents_db = []  # Store document IDs
 
-index = faiss.IndexFlatL2(384)  
-documents_db = [] 
 def index_documents():
+    """Indexes all documents using FAISS and SBERT."""
     global index, documents_db
     documents = Document.objects.all()
 
-    # Avoid empty document indexing
-    texts = [doc.extracted_text for doc in documents if doc.extracted_text]
+    texts = []
+    doc_ids = []
+
+    for doc in documents:
+        if doc.extracted_text:
+            texts.append(doc.extracted_text)
+            doc_ids.append(doc.id)
 
     if not texts:
-        return  # Avoid indexing an empty list
+        return  # Exit if no valid documents
 
     embeddings = sbert_model.encode(texts, convert_to_numpy=True)
 
-    documents_db.extend(texts)
+    documents_db = doc_ids  # Store document IDs
     index.add(embeddings)
 
-def search_documents(query, top_k=5):
+def search_documents(query):
+    """Searches all documents and returns matching file URLs."""
+    global index, documents_db
+
     if index.ntotal == 0:
         index_documents()  # Rebuild FAISS index if empty
 
-    query_embedding = sbert_model.encode([query], convert_to_numpy=True)
-    distances, indices = index.search(query_embedding, top_k)
+    query_lower = query.lower()
+    word_pattern = rf"\b{re.escape(query_lower)}\b"
 
-    results = [documents_db[idx] for idx in indices[0] if 0 <= idx < len(documents_db)]
-    return results
+    # Retrieve all documents that match the query (not just top-k)
+    matched_documents = [
+        doc for doc in Document.objects.all()
+        if doc.extracted_text and re.search(word_pattern, doc.extracted_text, re.IGNORECASE)
+    ]
+
+    # Return file URLs of all matched documents
+    return [doc.get_file_url() for doc in matched_documents]
